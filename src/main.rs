@@ -50,5 +50,13 @@ fn main() -> Result<(), anyhow::Error> {
     };
     dbg!(&last);
 
+    // get the commit range
+    let mut revwalk = repo.revwalk()?;
+    revwalk.push(tip.id())?;
+    revwalk.hide(last.id())?;
+
+    let commits: Vec<_> = revwalk.collect::<Result<Vec<_>, _>>()?;
+    dbg!(&commits);
+
     Ok(())
 }
