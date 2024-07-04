@@ -15,7 +15,8 @@ use clap::Parser;
 use colored::Colorize;
 use git2::Repository;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::process::Stdio;
 use std::{fmt::Write, io::Write as ioWrite};
 
@@ -31,10 +32,26 @@ struct Cli {
     last: Option<String>,
 }
 
-#[derive(Serialize)]
-struct CommitCache {
+#[derive(Serialize, Deserialize, Debug)]
+struct CommitInfo {
     oid: String,
+    headline: String,
+    body: String,
     pr: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct PrInfo {
+    number: String,
+    title: String,
+    body: String,
+    author: String,
+    comments: Vec<String>,
+    commits: Vec<CommitInfo>,
+    url: String,
+    // date
+    updated_at: String,
+    merged_at: String,
 }
 
 fn main() -> Result<(), anyhow::Error> {
@@ -47,6 +64,7 @@ fn main() -> Result<(), anyhow::Error> {
 
     // get the commit list
 
+    println!("{}", "Here is what I'm working with:".green());
     // first, get the tip of the branch (or the -r release sha specified)
     let tip = match cli.release {
         Some(release) => repo.revparse_single(&release).unwrap(),
@@ -83,6 +101,9 @@ fn main() -> Result<(), anyhow::Error> {
         println!("{} {}", commit.id().to_string().blue(), message);
     });
 
+    println!(" ");
+    println!("{}", "Getting PR information for commits".green());
+
     let pb = ProgressBar::new(count.try_into().unwrap());
     pb.set_style(
         ProgressStyle::with_template(
@@ -96,36 +117,84 @@ fn main() -> Result<(), anyhow::Error> {
     );
 
     // get github PR information
+
+    let mut pr_list = HashMap::new();
+    let mut commit_list = HashMap::new();
+
     let mut pos = 0;
     commits.clone().into_iter().for_each(|commit| {
         pos += 1;
         pb.set_position(pos);
-        let _ = get_pr_info(&repo, commit);
+        match get_pr_info(&repo, commit) {
+            Ok(pr_info) => match pr_info {
+                Some(pr_info) => {
+                    pr_list.insert(pr_info.number.clone(), pr_info);
+                }
+                None => {
+                    commit_list.insert(commit.to_string(), get_commit_info(&repo, commit).unwrap());
+                }
+            },
+            Err(e) => {
+                println!("Error: {}", e);
+            }
+        }
     });
 
     pb.finish_with_message("downloaded");
 
+    println!(" ");
+    println!("{}", "Basic message".green());
+
+    // print out the PRs
+    for (pr_number, pr_info) in pr_list.iter() {
+        println!("{} {}", pr_number.blue(), pr_info.title);
+    }
+    // print out the commits
+    for (commit_oid, commit_info) in commit_list.iter() {
+        println!("{} {}", commit_oid.blue(), commit_info.headline);
+    }
+
     Ok(())
+}
+
+fn get_commit_info(repo: &Repository, commit: git2::Oid) -> Result<CommitInfo, anyhow::Error> {
+    let commit_object = repo.find_commit(commit)?;
+    let commit_info = CommitInfo {
+        oid: commit.to_string(),
+        headline: commit_object.summary().unwrap().to_string(),
+        body: commit_object.message().unwrap().to_string(),
+        pr: None,
+    };
+    Ok(commit_info)
 }
 
 // look for cached data for this commit oid in .git/glance/commits/[oid].json
 // if it exists, return it
 // if it doesn't exist, run gh pr list --json --search [oid] --state merged
 // and cache the result
-fn get_pr_info(
-    repo: &Repository,
-    commit: git2::Oid,
-) -> Result<Option<serde_json::Value>, anyhow::Error> {
+fn get_pr_info(repo: &Repository, commit: git2::Oid) -> Result<Option<PrInfo>, anyhow::Error> {
     let commit_path = repo
         .path()
         .join("glance/commits")
         .join(commit.to_string() + ".json");
 
+    let commit_object = repo.find_commit(commit)?;
+
     if commit_path.exists() {
         let file = std::fs::File::open(commit_path)?;
         let reader = std::io::BufReader::new(file);
-        let pr_info: serde_json::Value = serde_json::from_reader(reader)?;
-        return Ok(Some(pr_info));
+        let commit_info: CommitInfo = serde_json::from_reader(reader)?;
+        let pr_info = match commit_info.pr {
+            Some(pr) => {
+                let pr_path = repo.path().join("glance/prs").join(pr + ".json");
+                let file = std::fs::File::open(pr_path)?;
+                let reader = std::io::BufReader::new(file);
+                let pr_info: PrInfo = serde_json::from_reader(reader)?;
+                Some(pr_info)
+            }
+            None => None,
+        };
+        return Ok(pr_info);
     } else {
         let gh_program = "gh";
         let mut cmd = std::process::Command::new(gh_program);
@@ -133,7 +202,7 @@ fn get_pr_info(
             "pr",
             "list",
             "--json",
-            "number,title,author,body,comments,commits,url,updatedAt",
+            "number,title,author,body,comments,commits,url,updatedAt,mergedAt",
             "--search",
             &commit.to_string(),
             "--state",
@@ -151,36 +220,63 @@ fn get_pr_info(
             let stdout = String::from_utf8_lossy(&output.stdout);
             let pr_info: serde_json::Value = serde_json::from_str(stdout.as_ref())?;
 
-            // cache the pr info
             if pr_info[0] == serde_json::Value::Null {
-                // nothing
-                let commit_cache = CommitCache {
-                    oid: commit.to_string(),
-                    pr: None,
-                };
-                let commit_cache_path = repo
-                    .path()
-                    .join("glance/commits")
-                    .join(commit.to_string() + ".json");
-                let mut file = std::fs::File::create(commit_cache_path).unwrap();
-                file.write_all(serde_json::to_string(&commit_cache).unwrap().as_bytes())
-                    .unwrap();
                 return Ok(None);
             }
+
+            let commits = pr_info[0]["commits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|commit| CommitInfo {
+                    oid: commit["oid"].as_str().unwrap().to_string(),
+                    headline: commit["messageHeadline"].as_str().unwrap().to_string(),
+                    body: commit["messageBody"].as_str().unwrap().to_string(),
+                    pr: Some(pr_info[0]["number"].to_string()),
+                })
+                .collect();
+
+            let pr_data = PrInfo {
+                number: pr_info[0]["number"].as_str().unwrap().to_string(),
+                title: pr_info[0]["title"].as_str().unwrap().to_string(),
+                body: pr_info[0]["body"].as_str().unwrap().to_string(),
+                author: pr_info[0]["author"]["login"].as_str().unwrap().to_string(),
+                updated_at: pr_info[0]["updatedAt"].as_str().unwrap().to_string(),
+                merged_at: pr_info[0]["mergedAt"].as_str().unwrap().to_string(),
+                commits,
+                comments: vec![],
+                url: pr_info[0]["url"].as_str().unwrap().to_string(),
+            };
 
             let pr_path = repo
                 .path()
                 .join("glance/prs")
                 .join(pr_info[0]["number"].to_string() + ".json");
             let mut file = std::fs::File::create(pr_path)?;
-            file.write_all(serde_json::to_string(&pr_info)?.as_bytes())?;
+            file.write_all(serde_json::to_string(&pr_data)?.as_bytes())?;
+
+            let commit_cache = CommitInfo {
+                oid: commit.to_string(),
+                headline: commit_object.summary().unwrap().to_string(),
+                body: commit_object.message().unwrap().to_string(),
+                pr: Some(pr_info[0]["number"].to_string()),
+            };
+            let commit_cache_path = repo
+                .path()
+                .join("glance/commits")
+                .join(commit.to_string() + ".json");
+            let mut file = std::fs::File::create(commit_cache_path).unwrap();
+            file.write_all(serde_json::to_string(&commit_cache).unwrap().as_bytes())
+                .unwrap();
 
             let commits = pr_info[0]["commits"].as_array();
             match commits {
                 Some(commits) => {
                     commits.iter().for_each(|commit| {
-                        let commit_cache = CommitCache {
+                        let commit_cache = CommitInfo {
                             oid: commit["oid"].as_str().unwrap().to_string(),
+                            headline: commit["messageHeadline"].as_str().unwrap().to_string(),
+                            body: commit["messageBody"].as_str().unwrap().to_string(),
                             pr: Some(pr_info[0]["number"].to_string()),
                         };
                         let commit_cache_path = repo
@@ -191,12 +287,14 @@ fn get_pr_info(
                         file.write_all(serde_json::to_string(&commit_cache).unwrap().as_bytes())
                             .unwrap();
                     });
-                    return Ok(Some(pr_info[0].clone()));
+                    return Ok(Some(pr_data));
                 }
                 None => {
                     // nothing
-                    let commit_cache = CommitCache {
+                    let commit_cache = CommitInfo {
                         oid: commit.to_string(),
+                        headline: commit_object.summary().unwrap().to_string(),
+                        body: commit_object.message().unwrap().to_string(),
                         pr: None,
                     };
                     let commit_cache_path = repo
