@@ -2,6 +2,14 @@
 name = "git-glance"
 version = "0.1.0"
 edition = "2021"
+authors = ["Scott Chacon <schacon@email.com>"]
+license = "MIT"
+description = "AI assisted GitHub PR-based Git changelog generator"
+readme = "README.md"
+homepage = "https://github.com/schacon/git-glance"
+repository = "https://github.com/schacon/git-glance"
+keywords = ["cli", "changelog", "git"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 clap = { version = "4.5.8", features = ["derive"] }
