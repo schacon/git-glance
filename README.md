@@ -2,7 +2,7 @@
 
 This is a very simple Git changelog generator.
 
-It does not rely on any specific style of commit messages (such as "conventional commits") and assumes that you're using GitHub pull requests as the main path to feature integration. 
+It does not rely on any specific style of commit messages (such as "conventional commits") and assumes that you're using GitHub pull requests as the main path to feature integration.
 
 It figures out what the commit range is you are trying to generate a changelog for, then gathers all the associated pull request data, then generates tagged summaries via OpenAI.
 
@@ -22,4 +22,6 @@ It also uses OpenAI to help with classification and summarization. You will need
 $ git config --global --add glance.openai.key sk_blahblahblah
 ```
 
+## Warnings
 
+This is horrible, horrible software and it will probably break. I'm not great at Rust and I've done little testing. It works for me, but if you're looking for solid code, this isn't a great place to look. Have fun. :)

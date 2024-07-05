@@ -20,7 +20,7 @@ use openai_api_rs::v1::chat_completion::{self, ChatCompletionRequest};
 use openai_api_rs::v1::common::GPT4_O;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::process::Stdio;
+use std::process::{exit, Stdio};
 use std::{fmt::Write, io::Write as ioWrite};
 
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
@@ -33,6 +33,9 @@ struct Cli {
 
     #[arg(short, long)]
     last: Option<String>,
+
+    #[arg(long)]
+    check: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -67,6 +70,11 @@ struct PrTaggedSummary {
 fn main() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
     let repo = Repository::open_from_env().unwrap();
+
+    if cli.check {
+        check_setup(&repo);
+        exit(0)
+    }
 
     // make the dirs we need if they're not there
     std::fs::create_dir_all(repo.path().join("glance/commits"))?;
@@ -243,6 +251,51 @@ fn main() -> Result<(), anyhow::Error> {
     }
 
     Ok(())
+}
+
+// check `gh` works
+// check openai key
+fn check_setup(repo: &Repository) {
+    let config = repo.config().unwrap();
+    let openai_key = config.get_string("glance.openai.key");
+    match openai_key {
+        Ok(_) => {
+            println!("{}", "* OpenAI key found".green());
+        }
+        Err(_) => {
+            println!("{}", "OpenAI key not found".red());
+        }
+    }
+
+    let mut cmd = std::process::Command::new("gh");
+    cmd.args(["auth", "status"]);
+    cmd.stderr(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stdin(Stdio::null());
+
+    let child = cmd.spawn();
+    if child.is_err() {
+        println!("{}", "* gh not found".red());
+        println!(
+            "{}",
+            "  - please install gh from https://cli.github.com/".blue()
+        );
+        return;
+    }
+
+    let output = child.unwrap().wait_with_output().unwrap();
+
+    if output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let std_both = format!("{} {}", stdout, stderr);
+        println!("{}\n\n {}", "* gh auth status good".green(), std_both);
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let std_both = format!("{} {}", stdout, stderr);
+        println!("{}\n\n {}", "* Failed to run gh".red(), std_both);
+    }
 }
 
 fn pr_to_tagged_summary(repo: &Repository, pr: &PrInfo) -> Result<PrTaggedSummary, anyhow::Error> {
