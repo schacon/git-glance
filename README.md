@@ -22,6 +22,10 @@ It also uses OpenAI to help with classification and summarization. You will need
 $ git config --global --add glance.openai.key sk_blahblahblah
 ```
 
+You can see if these things are set with `git-glance --check`:
+
+![glance check](https://github.com/schacon/git-glance/assets/70/93ac2f2b-83f1-4369-a696-a1052dbf0bd0)
+
 ## Warnings
 
 This is horrible, horrible software and it will probably break. I'm not great at Rust and I've done little testing. It works for me, but if you're looking for solid code, this isn't a great place to look. Have fun. :)
