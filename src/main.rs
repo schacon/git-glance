@@ -15,6 +15,9 @@ use clap::Parser;
 use colored::Colorize;
 use git2::Repository;
 
+use openai_api_rs::v1::api::Client;
+use openai_api_rs::v1::chat_completion::{self, ChatCompletionRequest};
+use openai_api_rs::v1::common::GPT4_O;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -49,9 +52,16 @@ struct PrInfo {
     comments: Vec<String>,
     commits: Vec<CommitInfo>,
     url: String,
-    // date
     updated_at: String,
     merged_at: String,
+}
+
+#[derive(Debug)]
+struct PrTaggedSummary {
+    tag: String,
+    summary: String,
+    number: String,
+    url: String,
 }
 
 fn main() -> Result<(), anyhow::Error> {
@@ -63,11 +73,10 @@ fn main() -> Result<(), anyhow::Error> {
     std::fs::create_dir_all(repo.path().join("glance/prs"))?;
 
     // get the commit list
-
     println!("{}", "Here is what I'm working with:".green());
     // first, get the tip of the branch (or the -r release sha specified)
-    let tip = match cli.release {
-        Some(release) => repo.revparse_single(&release).unwrap(),
+    let tip = match &cli.release {
+        Some(release) => repo.revparse_single(release).unwrap(),
         None => repo.revparse_single("HEAD").unwrap(),
     };
     println!("Tip commit:  {}", tip.id().to_string().blue());
@@ -143,18 +152,179 @@ fn main() -> Result<(), anyhow::Error> {
     pb.finish_with_message("downloaded");
 
     println!(" ");
-    println!("{}", "Basic message".green());
+    println!("{}", "Summarizing".green());
 
-    // print out the PRs
-    for (pr_number, pr_info) in pr_list.iter() {
-        println!("{} {}", pr_number.blue(), pr_info.title);
+    let pr_count = pr_list.len();
+    let pb = ProgressBar::new(pr_count.try_into().unwrap());
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})",
+        )
+        .unwrap()
+        .with_key("eta", |state: &ProgressState, w: &mut dyn Write| {
+            write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap()
+        })
+        .progress_chars("#>-"),
+    );
+
+    let mut pos = 0;
+
+    // collect all the pr_infos into a vector of pr_summaries
+    let pr_summaries: Vec<_> = pr_list
+        .values()
+        .map(|pr_info| pr_to_tagged_summary(&repo, pr_info))
+        // also increment the progress bar
+        .inspect(|_| {
+            pos += 1;
+            pb.set_position(pos);
+        })
+        .collect();
+
+    pb.finish_with_message("summarized");
+
+    println!(" ");
+    println!("{}", "Changelog".green());
+
+    // if there is a tag on the tip commit, show it
+    if let Some(release) = &cli.release {
+        // get the date
+        let commit = repo.revparse_single(release).unwrap();
+        let commit = repo.find_commit(commit.id()).unwrap();
+        let time = commit.time().seconds();
+        let time = chrono::DateTime::<chrono::Utc>::from_timestamp(time, 0);
+        if let Some(time) = time {
+            // format like "June 3, 2024"
+            let time = time.format("%B %e, %Y").to_string();
+            println!("**{}** ({})", release, time);
+        } else {
+            println!("**{}**", release);
+        }
+    };
+
+    // group the summaries by tag field
+    let mut grouped_pr_summaries = HashMap::new();
+    for pr_summary in pr_summaries.iter() {
+        match pr_summary {
+            Ok(pr_summary) => {
+                let tag = pr_summary.tag.clone();
+                grouped_pr_summaries
+                    .entry(tag)
+                    .or_insert_with(Vec::new)
+                    .push(pr_summary);
+            }
+            Err(e) => {
+                println!("Error: {}", e);
+            }
+        }
+    }
+
+    // print out the summaries by group
+    for (tag, pr_summaries) in grouped_pr_summaries.iter() {
+        // capitalize the first letter in the tag
+        let tag = tag.chars().next().unwrap().to_uppercase().to_string() + &tag[1..];
+        println!("\n** {} **", tag.magenta());
+        for &pr_summary in pr_summaries {
+            println!(
+                "* {} [#{}]({})",
+                pr_summary.summary,
+                pr_summary.number.blue(),
+                pr_summary.url
+            );
+        }
+    }
+
+    if !commit_list.is_empty() {
+        println!("## {}", "Other".magenta());
     }
     // print out the commits
     for (commit_oid, commit_info) in commit_list.iter() {
-        println!("{} {}", commit_oid.blue(), commit_info.headline);
+        let short_oid = &commit_oid[..6];
+        println!("* {} ({})", commit_info.headline, short_oid);
     }
 
     Ok(())
+}
+
+fn pr_to_tagged_summary(repo: &Repository, pr: &PrInfo) -> Result<PrTaggedSummary, anyhow::Error> {
+    let commits = pr
+        .commits
+        .iter()
+        .map(|commit| format!("* {}", commit.headline))
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    let prompt = format!(
+        "You are a senior software developer writing a one line summary and tag for a pull request.
+I will give you a Pull Request title, body and a list of the commit messages.
+Write me a tag and one line summary for that pull request in the following json format:
+
+```
+{{
+    'tag': 'feature',
+    'summary': 'updated the css to remove all tailwind references'
+}}
+```
+
+The tag in parenthesis should be one of: feature, bugfix, documentation, test, misc.
+
+Here is the pull request information:
+
+Title: {}
+Body: 
+{}
+
+Commit Summaries:
+{}
+
+Please respond with only the json data of tag and summary",
+        pr.title, pr.body, commits,
+    );
+
+    let response = get_ai_response(&repo, prompt)?;
+
+    // parse the json
+    // we need to strip the ```json\n``` markdown stuff
+    let response = response.replace("```json\n", "").replace("```", "");
+    let response: serde_json::Value = serde_json::from_str(&response)?;
+    let tag = response["tag"].as_str().unwrap();
+    let summary = response["summary"].as_str().unwrap();
+
+    Ok(PrTaggedSummary {
+        summary: summary.to_string(),
+        tag: tag.to_string(),
+        number: pr.number.clone(),
+        url: pr.url.clone(),
+    })
+}
+
+fn get_ai_response(repo: &Repository, prompt: String) -> Result<String, anyhow::Error> {
+    let config = repo.config()?;
+
+    /*
+    let ai_method = match config.get_string("glance.ai") {
+        Ok(ai_method) => ai_method,
+        Err(_) => bail!("no ai method configured in git config\nuse `git config --add glance.ai [openai,claude,ollama]` to set one\nthen run git config --add glance.openai.key [openai-key]"),
+    };
+    println!("Using AI method: {}", ai_method);
+    */
+
+    let openai_key = config.get_string("glance.openai.key")?;
+    let client = Client::new(openai_key);
+    let req = ChatCompletionRequest::new(
+        GPT4_O.to_string(),
+        vec![chat_completion::ChatCompletionMessage {
+            role: chat_completion::MessageRole::user,
+            content: chat_completion::Content::Text(prompt),
+            name: None,
+        }],
+    );
+    let result = client.chat_completion(req)?;
+    return Ok(result.choices[0]
+        .message
+        .content
+        .as_ref()
+        .unwrap()
+        .to_string());
 }
 
 fn get_commit_info(repo: &Repository, commit: git2::Oid) -> Result<CommitInfo, anyhow::Error> {
@@ -219,7 +389,6 @@ fn get_pr_info(repo: &Repository, commit: git2::Oid) -> Result<Option<PrInfo>, a
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let pr_info: serde_json::Value = serde_json::from_str(stdout.as_ref())?;
-
             if pr_info[0] == serde_json::Value::Null {
                 return Ok(None);
             }
@@ -237,7 +406,7 @@ fn get_pr_info(repo: &Repository, commit: git2::Oid) -> Result<Option<PrInfo>, a
                 .collect();
 
             let pr_data = PrInfo {
-                number: pr_info[0]["number"].as_str().unwrap().to_string(),
+                number: pr_info[0]["number"].to_string(),
                 title: pr_info[0]["title"].as_str().unwrap().to_string(),
                 body: pr_info[0]["body"].as_str().unwrap().to_string(),
                 author: pr_info[0]["author"]["login"].as_str().unwrap().to_string(),
