@@ -263,7 +263,13 @@ fn check_setup(repo: &Repository) {
             println!("{}", "* OpenAI key found".green());
         }
         Err(_) => {
-            println!("{}", "OpenAI key not found".red());
+            println!("{}", "* OpenAI key not found".red());
+            println!(
+                "{}",
+                "  - please get an openai api key and install it with:
+ git config --global --add glance.openai.key sk_mykeydata\n"
+                    .blue()
+            );
         }
     }
 
