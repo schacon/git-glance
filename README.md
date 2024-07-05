@@ -2,10 +2,24 @@
 
 This is a very simple Git changelog generator.
 
-It does not rely on any specific style of commit messages (such as "conventional commits") and assumes that you're using GitHub pull requests as the main path to feature integration.
+It does not rely on any specific style of commit messages (such as "conventional commits") and assumes that you're using GitHub pull requests as the main path to feature integration. 
 
-In order to get the PR data, it assumes that you have `gh` cli tool setup and that we can execute it. It will work in a basic way without that, but most of the value is associating commits to PRs that have been merged and summarizing them based on that data (PR body, comments, etc).
+It figures out what the commit range is you are trying to generate a changelog for, then gathers all the associated pull request data, then generates tagged summaries via OpenAI.
 
-It also uses AI models to help with classification and summarization. You will need an Anthropic key, OpenAI key or Ollama installation to enable these features.
+![preparing the message](https://github.com/schacon/git-glance/assets/70/b93e513a-cd45-4ab4-bec7-44ece96aa2af)
+
+Once all that data is gathered, it will output a markdown based changelog with links to relevant PRs.
+
+![markdown output](https://github.com/schacon/git-glance/assets/70/1541dc29-c748-43f6-8638-f90875d1cd17)
+
+## Requirements
+
+In order to get the PR data, it assumes that you have `gh` cli tool setup and that we can execute it.
+
+It also uses OpenAI to help with classification and summarization. You will need an OpenAI key or it will bail.
+
+```
+$ git config --global --add glance.openai.key sk_blahblahblah
+```
 
 
