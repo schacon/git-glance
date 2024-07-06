@@ -12,6 +12,12 @@ Once all that data is gathered, it will output a markdown based changelog with l
 
 ![markdown output](https://github.com/schacon/git-glance/assets/70/1541dc29-c748-43f6-8638-f90875d1cd17)
 
+## Installing
+
+```
+$ cargo install git-glance
+```
+
 ## Requirements
 
 In order to get the PR data, it assumes that you have `gh` cli tool setup and that we can execute it.
