@@ -35,3 +35,11 @@ You can see if these things are set with `git-glance --check`:
 ## Warnings
 
 This is horrible, horrible software and it will probably break. I'm not great at Rust and I've done little testing. It works for me, but if you're looking for solid code, this isn't a great place to look. Have fun. :)
+
+## TODO
+
+- [ ] Add executive overview
+- [ ] Capitalize everything
+- [ ] Always do 'features' first
+- [ ] Sort by something (date? size of diff?)
+- [ ] Send diffs if we don't have much of a description
