@@ -1,6 +1,6 @@
 # Git Glance
 
-This is a very simple Git changelog generator.
+This is a very simple Git changelog generator, but it is by far the best Git changelog generator that I have ever written.
 
 It does not rely on any specific style of commit messages (such as "conventional commits") and assumes that you're using GitHub pull requests as the main path to feature integration.
 
